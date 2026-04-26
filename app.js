@@ -305,10 +305,8 @@ var ngramTypeConfig = {
             }
         },
         keyHandler: function(e) {
-            var key = e.key;
-
-            // For other miscellaneous keys.
-            if (key.length > 1) {
+            // Only handle text insertions and deletions.
+            if (e.inputType !== 'insertText' && e.inputType !== 'deleteContentBackward' && e.inputType !== 'deleteContentForward') {
                 return;
             }
 
