@@ -103,6 +103,8 @@ var ngramTypeConfig = {
         },
     },
     mounted: function() {
+        $('.timer').countimer({ autoStart: false});
+        
         // If there's already saved data.
         if (localStorage.ngramTypeAppdata != undefined) {
             var data = this.getSavedData();
