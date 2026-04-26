@@ -237,7 +237,7 @@
                     </div>
                 </div>
             </fieldset>
-            <fieldset class="settings-module col-xl-2 col-lg-2 col-md-3 col-sm-4 col-xs-12">
+            <fieldset class="generator-settings-module col-xl-2 col-lg-2 col-md-3 col-sm-4 col-xs-12">
                 <legend>Generator</legend>
                 <div class="form-group">
                     <label class="col-form-label col-form-label-sm">Combination</label>
@@ -246,6 +246,46 @@
                     <label class="col-form-label col-form-label-sm">Repetition</label>
                     <input v-model.number="data[data['source']].repetition" v-on:change="refreshPhrases"
                         class="form-control form-control-sm" type="number" min="1">
+                    <label class="col-form-label col-form-label-sm">Lesson order</label>
+                    <div class="custom-control custom-radio">
+                        <input type="radio" class="custom-control-input" id="gen-random"
+                            name="lesson-gen-mode" value="random" v-model="data.lessonGenerationMode">
+                        <label class="custom-control-label" for="gen-random">Random shuffle</label>
+                    </div>
+                    <div class="custom-control custom-radio">
+                        <input type="radio" class="custom-control-input" id="gen-ema"
+                            name="lesson-gen-mode" value="ema" v-model="data.lessonGenerationMode">
+                        <label class="custom-control-label" for="gen-ema"
+                            title="EMA formula: (α * n-gram score + (1-α) * previous EMA)">
+                            EMA-weighted (weak / untested first)
+                        </label>
+                    </div>
+                    <div v-show="data.lessonGenerationMode === 'ema'">
+                    <label class="col-form-label col-form-label-sm mt-1"
+                        title="applies exponent to the n-gram score, meaning a value of 0 treats all n-grams equally,while a higher value favors slower n-grams. default is 1. Example: with a value of 0.6, if 'th' has a score twice as bad as 'ed', it will appear 2^0.6 = 1.52 times more often than 'ed'.">
+                        Slow n-gram bias
+                    </label>
+                    <input v-model.number="data.ema.genBias" class="form-control form-control-sm" type="number"
+                        min="0" max="2" step="0.1">
+                    <label class="col-form-label col-form-label-sm mt-1" 
+                        title="a higher value means the score depends more on recent typing performance. default is 0.2. Set to 0 to disable learning from recent typing performance.">
+                        α
+                    </label>
+                    <input v-model.number="data.ema.alpha" class="form-control form-control-sm" type="number"
+                        min="0" max="1" step="0.01">
+                    <label class="col-form-label col-form-label-sm mt-1"
+                        title="is relative to the user speed, a higher value means the score is penalized more for mistakes. default is 1.">
+                        Mistake weight
+                    </label>
+                    <input v-model.number="data.ema.mistakeWeight" class="form-control form-control-sm" type="number"
+                        min="0" max="5" step="0.1">
+                    <label class="col-form-label col-form-label-sm mt-1"
+                        title="a higher value means the score is penalized more for inconsistent typing. default is 1.5. Currently has no effect on bigrams as they only have 1 inter-key interval, meaning the variance is always 0.">
+                        Consistency weight
+                    </label>
+                    <input v-model.number="data.ema.consistencyWeight" class="form-control form-control-sm" type="number"
+                        min="0" max="2" step="0.1">
+                    </div>
                 </div>
             </fieldset>
             <fieldset class="settings-module col-xl-2 col-lg-2 col-md-3 col-sm-4 col-xs-12">
@@ -290,7 +330,7 @@
                     <div class="modal-body">
                         <p>
                             There are data schema changes to integrate the scoping of sources (i.e. the dynamic <b>Top 50</b>, <b>Top 100</b>, <b>Top 150</b>, or <b>Top 200</b>)
-                            for more flexible and comprehensive training.
+                            for more flexible and comprehensive training. The app stores per–n-gram EMA timing, optional EMA-weighted lesson order, and global EMA parameters (α, penalty).
                         </p>
                         <p>
                             This means that your saved data will be reset, but you could easily replicate your previous settings.
@@ -334,6 +374,10 @@
             <h4>WPM: {{ rawWPM }} </h4>
             &nbsp; &nbsp; &nbsp; &nbsp; <h4>Accuracy: {{ accuracy }} % </h4>
             &nbsp; &nbsp; &nbsp; &nbsp; <h4>Average WPM: {{ averageWPM }} </h4>
+        </div>
+        <div class="center small text-white-50 mt-2 mb-2">
+            <button type="button" class="btn btn-sm btn-outline-light" v-on:click="downloadNgramEmaCsv">Download n-gram EMA (CSV)</button>
+            <button type="button" class="btn btn-sm btn-outline-light ml-1" v-on:click="copyNgramEmaCsv" title="Copy ngram,ema_ms to the clipboard">Copy n-gram EMA</button>
         </div>
         <!--Stats end-->
 
