@@ -20,11 +20,14 @@ var ngramTypeConfig = {
                 soundPassedThresholdEnabled: true,
                 soundFailedThresholdEnabled: true,
                 lessonGenerationMode: 'random',
-                ema: {
-                    genBias: 1,
+                emaLearningConfig: {
                     alpha: 0.2,
-                    mistakeWeight: 1,
-                    consistencyWeight: 1.5,
+                },
+                emaGenerationConfig: {
+                    generalBias: 1,
+                    speedBias: 1,
+                    mistakesBias: 1,
+                    consistencyBias: 1,
                 },
                 bigrams: {
                     scope: 50,
@@ -35,7 +38,9 @@ var ngramTypeConfig = {
                     WPMs: [],
                     phrases: {},
                     phrasesCurrentIndex: 0,
-                    ngramEmaMs: {},
+                    charsTypedCount: 0,
+                    lastMistakeGlobalIndex: {},
+                    emaScores: {},
                 },
                 trigrams: {
                     scope: 50,
@@ -46,7 +51,9 @@ var ngramTypeConfig = {
                     WPMs: [],
                     phrases: {},
                     phrasesCurrentIndex: 0,
-                    ngramEmaMs: {},
+                    charsTypedCount: 0,
+                    lastMistakeGlobalIndex: {},
+                    emaScores: {},
                 },
                 tetragrams: {
                     scope: 50,
@@ -57,7 +64,9 @@ var ngramTypeConfig = {
                     WPMs: [],
                     phrases: {},
                     phrasesCurrentIndex: 0,
-                    ngramEmaMs: {},
+                    charsTypedCount: 0,
+                    lastMistakeGlobalIndex: {},
+                    emaScores: {},
                 },
                 words: {
                     scope: 50,
@@ -68,7 +77,9 @@ var ngramTypeConfig = {
                     WPMs: [],
                     phrases: {},
                     phrasesCurrentIndex: 0,
-                    ngramEmaMs: {},
+                    charsTypedCount: 0,
+                    lastMistakeGlobalIndex: {},
+                    emaScores: {},
                 },
                 custom_words: {
                     scope: null,
@@ -79,7 +90,9 @@ var ngramTypeConfig = {
                     WPMs: [],
                     phrases: {},
                     phrasesCurrentIndex: 0,
-                    ngramEmaMs: {},
+                    charsTypedCount: 0,
+                    lastMistakeGlobalIndex: {},
+                    emaScores: {},
                 },
             },
 
@@ -154,6 +167,7 @@ var ngramTypeConfig = {
             if (key == 'Tab' || key == 'Escape') {
                 e.preventDefault();
                 that.resetCurrentPhraseMetrics();
+                that.pauseTimer(); 
             }
         });
 
@@ -193,20 +207,27 @@ var ngramTypeConfig = {
             this.save();
         },
         'data.lessonGenerationMode': function() {
-            this.refreshPhrasesAndCurrentMetrics();
-        },
-        'data.ema.genBias': function() {
             this.save();
             this.refreshPhrasesAndCurrentMetrics();
         },
-        'data.ema.alpha': function() {
+        'data.emaLearningConfig.alpha': function() {
             this.save();
         },
-        'data.ema.mistakeWeight': function() {
+        'data.emaGenerationConfig.generalBias': function() {
             this.save();
+            this.refreshPhrasesAndCurrentMetrics();
         },
-        'data.ema.consistencyWeight': function() {
+        'data.emaGenerationConfig.speedBias': function() {
             this.save();
+            this.refreshPhrasesAndCurrentMetrics();
+        },
+        'data.emaGenerationConfig.mistakesBias': function() {
+            this.save();
+            this.refreshPhrasesAndCurrentMetrics();
+        },
+        'data.emaGenerationConfig.consistencyBias': function() {
+            this.save();
+            this.refreshPhrasesAndCurrentMetrics();
         },
         custom_words: function() {
             this.refreshPhrasesAndCurrentMetrics();
@@ -258,31 +279,61 @@ var ngramTypeConfig = {
             ) {
                 this.data.lessonGenerationMode = 'random';
             }
-            this.data.ema ||= {};
-            this.data.ema.genBias ||= 1;
-            this.data.ema.alpha ||= 0.2;
-            this.data.ema.mistakeWeight ||= 1;
-            this.data.ema.consistencyWeight ||= 1.5;
+            this.data.emaLearningConfig ||= {};
+            this.data.emaLearningConfig.alpha ||= 0.2;
+            this.data.emaLearningConfig.mistakeWeight ||= 1;
+            this.data.emaLearningConfig.consistencyWeight ||= 1.5;
+
+            this.data.emaGenerationConfig ||= {};
+            this.data.emaGenerationConfig.generalBias ||= 1;
+            this.data.emaGenerationConfig.speedBias ||= 1;
+            this.data.emaGenerationConfig.mistakesBias ||= 1;
+            this.data.emaGenerationConfig.consistencyBias ||= 1;
         },
-        normalizeGenerationScore: function (raw) {
-            if (
-                raw === Infinity
-                || raw === Number.POSITIVE_INFINITY
-                || typeof raw !== 'number'
-                || raw !== raw
-            ) {
-                return 1e300;
-            }
-            return Math.max(raw, 1e-9);
+        inclusivePercentile: function (sortedValues, k) {
+            var realIndex = k * (sortedValues.length - 1);
+            var index = Math.floor(realIndex);
+            var fracIndex = realIndex - index;
+            var fracScore = index + 1 < sortedValues.length ? fracIndex * (sortedValues[index + 1] - sortedValues[index]) : 0;
+            return sortedValues[index] + fracScore;
         },
-        
-        getGenerationEmaScore: function (ngramStr) {
-            var ds = this.dataSource;
-            var map = ds.ngramEmaMs ||= {};
-            if (!Object.prototype.hasOwnProperty.call(map, ngramStr)) {
-                return Infinity;
+        normalizeScore: function (score, sortedScores, minPercentile, maxPercentile) {
+            var medianScore = this.inclusivePercentile(sortedScores, 0.5);
+            var minDistance = minPercentile - medianScore;
+            var maxDistance = maxPercentile - medianScore;
+            if (maxDistance + minDistance === 0) {
+                return 0;
             }
-            return map[ngramStr];
+            var distance = score - medianScore;
+            return (distance - minDistance) / Math.abs(maxDistance - minDistance);
+        },
+        getWeights: function (ngram) {
+            var emaScores = this.dataSource.emaScores || {};
+            if (!Object.prototype.hasOwnProperty.call(emaScores, ngram)) {
+                return {
+                    durationFactor: 1e300,
+                    mistakesFactor: 1e300,
+                    consistencyFactor: 1e300,
+                };
+            }
+            var sortedDurations = Object.values(emaScores).map((score) => score.duration).sort((a, b) => a - b);
+            var sortedMistakes = Object.values(emaScores).map((score) => score.mistakes).sort((a, b) => a - b);
+            var sortedConsistencies = Object.values(emaScores).map((score) => score.consistency).sort((a, b) => a - b);
+            
+            var k = 0.05;
+            var durationFactor = this.normalizeScore(emaScores[ngram].duration, sortedDurations, this.inclusivePercentile(sortedDurations, k), this.inclusivePercentile(sortedDurations, 1 - k));
+            var mistakesFactor = 1 - this.normalizeScore(emaScores[ngram].mistakes, sortedMistakes, this.inclusivePercentile(sortedMistakes, k), this.inclusivePercentile(sortedMistakes, 1 - k));
+            var consistencyFactor = this.normalizeScore(emaScores[ngram].consistency, sortedConsistencies, this.inclusivePercentile(sortedConsistencies, k), this.inclusivePercentile(sortedConsistencies, 1 - k));
+            return {
+                durationFactor: durationFactor,
+                mistakesFactor: mistakesFactor,
+                consistencyFactor: consistencyFactor,
+            };
+        },
+        getCombinedWeight: function (ngram) {
+            var weights = this.getWeights(ngram);
+            var weight = weights.durationFactor * this.data.emaGenerationConfig.speedBias + weights.mistakesFactor * this.data.emaGenerationConfig.mistakesBias + weights.consistencyFactor * this.data.emaGenerationConfig.consistencyBias;
+            return Math.pow(weight, this.data.emaGenerationConfig.generalBias);
         },
         weightedPickIndex: function (weights) {
             var sum = 0;
@@ -305,17 +356,13 @@ var ngramTypeConfig = {
         sampleNgramsWeightedNoReplace: function (pool, count) {
             var out = [];
             var that = this;
-            var poolCopy = pool; // no need to deep copy, we don't mutate elements
-            var take = Math.min(count, poolCopy.length);
+            var take = Math.min(count, pool.length);
             for (var t = 0; t < take; t++) {
-                var weights = poolCopy.map(function (ng) {
-                    return that.normalizeGenerationScore(
-                        Math.pow(that.getGenerationEmaScore(ng), that.data.ema.genBias)
-                    );
+                var weights = pool.map(function (ngram) {
+                    return that.getCombinedWeight(ngram);
                 });
                 var idx = this.weightedPickIndex(weights);
-                out.push(poolCopy[idx]);
-                // poolCopy.splice(idx, 1);
+                out.push(pool[idx]);
             }
             return out;
         },
@@ -340,19 +387,13 @@ var ngramTypeConfig = {
             return [parts.join(' ')];
         },
         tokenizePhrase: function (expectedPhrase) {
-            var tokenList = expectedPhrase.split(/\s+/).filter(function (t) {
-                return t.length > 0;
-            });
+            var tokenList = expectedPhrase.match(/\s*\S*\s?/g).filter(t => t.length > 0);
             var tokens = [];
             var pos = 0;
             for (var i = 0; i < tokenList.length; i++) {
-                var token = tokenList[i];
+                var token = tokenList[i].trimEnd();
                 tokens.push({ text: token, start: pos, end: pos + token.length - 1 });
-                pos += token.length;
-                if (i < tokenList.length - 1) {
-                    // Adds a space between tokens.
-                    pos += 1;
-                }
+                pos += tokenList[i].length;
             }
             return tokens;
         },
@@ -367,6 +408,17 @@ var ngramTypeConfig = {
             this.tokenStartMs = Array(n).fill(null);
             this.tokenEndMs = Array(n).fill(null);
             this.lastValidPrefixLength = 0;
+        },
+        updateMistakeTracking: function () {
+            var ds = this.dataSource;
+            for (var i = 0; i < this.tokens.length; i++) {
+                var token = this.tokens[i];
+                if (this.tokenWrongCounts[i] > 0) {
+                    var phraseStartGlobalIndex = ds.charsTypedCount - (this.hitsWrong + this.hitsCorrect);
+                    var tokenEndGlobalIndex = phraseStartGlobalIndex + token.end; // for simplicity, we assume all ngrams before this one are typed without mistakes
+                    ds.lastMistakeGlobalIndex[token.text] = tokenEndGlobalIndex;
+                }
+            }
         },
         updateValidPrefixTracking: function (typedPhrase) {
             if (!this.tokens || !this.tokens.length) {
@@ -416,7 +468,7 @@ var ngramTypeConfig = {
             }
         },
         firstMismatchTokenIndex: function (typedTrim) {
-            var tokenizedTypedPhrase = this.tokenizePhrase(typedTrim);  
+            var tokenizedTypedPhrase = this.tokenizePhrase(typedTrim);
             for (var i = 0; i < this.tokens.length; i++) {
                 var token = this.tokens[i];
                 if (tokenizedTypedPhrase[i].text !== token.text) {
@@ -425,55 +477,72 @@ var ngramTypeConfig = {
             }
             return -1;
         },
+        getTokenDurationMs: function (tokenIndex) {
+            var startMs = this.tokenStartMs[tokenIndex];
+            var endMs = this.tokenEndMs[tokenIndex];
+            if (startMs == null || endMs == null || endMs - startMs <= 0) {
+                throw new Error('Invalid durationMs:', endMs - startMs, 'for token:', this.tokens[tokenIndex].text);
+            }
+            return endMs - startMs;
+        },
+        getTokenMistakeGapLength: function (tokenIndex) {
+            var lastMistakeGlobalIndex = this.dataSource.lastMistakeGlobalIndex[this.tokens[tokenIndex].text];
+            lastMistakeGlobalIndex ||= 0;
+            return this.dataSource.charsTypedCount - lastMistakeGlobalIndex;
+        },
+        getTokenCoefficientOfVariation: function (tokenIndex) {
+            var keyIntervalMs = Array(this.tokenKeyTimestampMs[tokenIndex].length - 1).fill(null);
+            for (var j = 0; j < keyIntervalMs.length; j++) {
+                keyIntervalMs[j] = this.tokenKeyTimestampMs[tokenIndex][j + 1] - this.tokenKeyTimestampMs[tokenIndex][j];
+            }
+            var meanKeyIntervalMs = keyIntervalMs.reduce((acc, b) => acc + b) / keyIntervalMs.length;
+            var varianceKeyIntervalMs = keyIntervalMs.reduce((acc, b) => acc + Math.pow(b - meanKeyIntervalMs, 2), 0) / keyIntervalMs.length;
+            var coefficientOfVariation = Math.sqrt(varianceKeyIntervalMs) / meanKeyIntervalMs;
+            // in case of a browser timing bug, we prevent the EMA from becoming NaN
+            if (isNaN(coefficientOfVariation)) {
+                coefficientOfVariation = 0;
+            }
+            return coefficientOfVariation;
+        },
         applyNgramEmaForCompletedPhrase: function () {
             var ds = this.dataSource;
-            if (!ds.ngramEmaMs) {
-                ds.ngramEmaMs = {};
-            }
-            var alpha = this.data.ema.alpha;
+            var alpha = this.data.emaLearningConfig.alpha;
             for (var i = 0; i < this.tokens.length; i++) {
                 var token = this.tokens[i];
-                var keyIntervalMs = Array(this.tokenKeyTimestampMs[i].length - 1).fill(null);
-                for (var j = 0; j < keyIntervalMs.length; j++) {
-                    keyIntervalMs[j] = this.tokenKeyTimestampMs[i][j + 1] - this.tokenKeyTimestampMs[i][j];
-                }
-                var meanKeyIntervalMs = keyIntervalMs.reduce((acc, b) => acc + b) / keyIntervalMs.length;
-                var varianceKeyIntervalMs = keyIntervalMs.reduce((acc, b) => acc + Math.pow(b - meanKeyIntervalMs, 2), 0) / keyIntervalMs.length;
-                var coefficientOfVariation = Math.sqrt(varianceKeyIntervalMs) / meanKeyIntervalMs;
-                var a = this.tokenStartMs[i];
-                var b = this.tokenEndMs[i];
-                if (a == null || b == null || b - a <= 0) {
-                    throw new Error('Invalid durationMs:', b - a, 'for token:', token.text);
-                }
-                var prev = ds.ngramEmaMs[token.text] || 0;
-                var wrong = this.tokenWrongCounts[i] || 0;
-                var mistakePenalty = this.data.ema.mistakeWeight * prev; // mistake cost is relative to the user speed
-                var consistencyPenalty = 1 + (this.data.ema.consistencyWeight * coefficientOfVariation);
-                var score = ((b - a) + wrong * mistakePenalty) * consistencyPenalty;
-                if (prev === undefined) {
-                    ds.ngramEmaMs[token.text] = score;
+                var prevScore = ds.emaScores[token.text];
+                
+                var durationMsScore = this.getTokenDurationMs(i);
+                var mistakesScore = this.getTokenMistakeGapLength(i);
+                var consistencyScore = this.getTokenCoefficientOfVariation(i);
+                if (prevScore === undefined) {
+                    ds.emaScores[token.text] = {
+                        duration: durationMsScore,
+                        mistakes: mistakesScore,
+                        consistency: consistencyScore,
+                    };
                 } else {
-                    ds.ngramEmaMs[token.text] = alpha * score + (1 - alpha) * prev;
+                    ds.emaScores[token.text] = {
+                        duration: alpha * durationMsScore + (1 - alpha) * prevScore.duration,
+                        mistakes: alpha * mistakesScore + (1 - alpha) * prevScore.mistakes,
+                        consistency: alpha * consistencyScore + (1 - alpha) * prevScore.consistency,
+                    };
                 }
             }
             this.save();
         },
         getNgramEmaCsvSorted: function () {
             var ds = this.dataSource;
-            var ema = ds.ngramEmaMs ||= {};
+            var ema = ds.emaScores || {};
             var rows = [];
-            for (var k in ema) {
-                if (Object.prototype.hasOwnProperty.call(ema, k)) {
-                    rows.push([k, Math.round(ema[k]*10)/10]);
-                }
+            for (var ngram in ema) {
+                var weights = this.getWeights(ngram);
+                rows.push([ngram, ema[ngram].duration, weights.durationFactor, ema[ngram].mistakes, weights.mistakesFactor, ema[ngram].consistency, weights.consistencyFactor, this.getCombinedWeight(ngram)]);
             }
-            rows.sort(function (a, b) {
-                return a[1] - b[1];
-            });
-            var lines = ['ngram,ema_score'];
+            rows.sort((a, b) => a[7] - b[7]);
+            var lines = ['ngram,duration,duration factor,chars since last mistake,mistake factor,consistency,consistency factor,combined weight'];
             for (var i = 0; i < rows.length; i++) {
                 lines.push(
-                    rows[i][0] + ',' + rows[i][1]
+                    rows[i][0] + ',' + rows[i][1] + ',' + rows[i][2] + ',' + rows[i][3] + ',' + rows[i][4] + ',' + rows[i][5] + ',' + rows[i][6] + ',' + rows[i][7]
                 );
             }
             return lines.join('\r\n');
@@ -618,15 +687,18 @@ var ngramTypeConfig = {
                 return;
             }
 
-            this.resumeTimer();            
-            this.updateValidPrefixTracking(typedPhrase);
-
+            this.resumeTimer();
+            if (e.inputType === 'insertText') {
+                this.dataSource.charsTypedCount += 1;
+            }
+            
             if (this.expectedPhrase.startsWith(typedPhrase)) {
                 if (this.data.soundCorrectLetterEnabled) {
                     this.stopCurrentPlayingSound();
                     this.correctLetterSound.play();
                     this.currentPlayingSound = this.correctLetterSound;
                 }
+                this.updateValidPrefixTracking(typedPhrase);
                 this.isInputCorrect = true;
                 this.hitsCorrect += 1;
             }
@@ -658,6 +730,7 @@ var ngramTypeConfig = {
                     this.hitsCorrect / (this.hitsCorrect + this.hitsWrong) * 100
                 );
 
+                this.updateMistakeTracking();
                 this.applyNgramEmaForCompletedPhrase();
 
                 var dataSource = this.dataSource;
