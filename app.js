@@ -311,9 +311,9 @@ var ngramTypeConfig = {
             var emaScores = this.dataSource.emaScores || {};
             if (!Object.prototype.hasOwnProperty.call(emaScores, ngram)) {
                 return {
-                    durationFactor: 1e300,
-                    mistakesFactor: 1e300,
-                    consistencyFactor: 1e300,
+                    durationFactor: Infinity,
+                    mistakesFactor: Infinity,
+                    consistencyFactor: Infinity,
                 };
             }
             var sortedDurations = Object.values(emaScores).map((score) => score.duration).sort((a, b) => a - b);
@@ -332,8 +332,20 @@ var ngramTypeConfig = {
         },
         getCombinedWeight: function (ngram) {
             var weights = this.getWeights(ngram);
-            var weight = weights.durationFactor * this.data.emaGenerationConfig.speedBias + weights.mistakesFactor * this.data.emaGenerationConfig.mistakesBias + weights.consistencyFactor * this.data.emaGenerationConfig.consistencyBias;
-            return Math.pow(weight, this.data.emaGenerationConfig.generalBias);
+            var combinedWeight = 
+                weights.durationFactor * this.data.emaGenerationConfig.speedBias + 
+                weights.mistakesFactor * this.data.emaGenerationConfig.mistakesBias + 
+                weights.consistencyFactor * this.data.emaGenerationConfig.consistencyBias;
+            return Math.min(combinedWeight, 1e300);
+        },
+        biasWeight: function (weight, minWeight, maxWeight) {
+            var span = maxWeight - minWeight;
+            if (span === 0) {
+                return weight;
+            }
+            var normalizedWeight = (weight - minWeight) / span;
+            var biasedNormalizedWeight = Math.pow(normalizedWeight, this.data.emaGenerationConfig.generalBias);
+            return biasedNormalizedWeight * span + minWeight;
         },
         weightedPickIndex: function (weights) {
             var sum = 0;
@@ -358,10 +370,11 @@ var ngramTypeConfig = {
             var that = this;
             var take = Math.min(count, pool.length);
             for (var t = 0; t < take; t++) {
-                var weights = pool.map(function (ngram) {
-                    return that.getCombinedWeight(ngram);
-                });
-                var idx = this.weightedPickIndex(weights);
+                var weights = pool.map((ngram) => that.getCombinedWeight(ngram));
+                var minWeight = Math.min(...weights);
+                var maxWeight = Math.max(...weights);
+                var biasedWeights = weights.map((weight) => that.biasWeight(weight, minWeight, maxWeight));
+                var idx = this.weightedPickIndex(biasedWeights);
                 out.push(pool[idx]);
             }
             return out;
@@ -534,9 +547,12 @@ var ngramTypeConfig = {
             var ds = this.dataSource;
             var ema = ds.emaScores || {};
             var rows = [];
+            var minCombinedWeight = Object.keys(ema).reduce((min, ngram) => Math.min(min, this.getCombinedWeight(ngram)), Infinity);
+            var maxCombinedWeight = Object.keys(ema).reduce((max, ngram) => Math.max(max, this.getCombinedWeight(ngram)), -Infinity);
             for (var ngram in ema) {
                 var weights = this.getWeights(ngram);
-                rows.push([ngram, ema[ngram].duration, weights.durationFactor, ema[ngram].mistakes, weights.mistakesFactor, ema[ngram].consistency, weights.consistencyFactor, this.getCombinedWeight(ngram)]);
+                var combinedWeight = this.biasWeight(this.getCombinedWeight(ngram), minCombinedWeight, maxCombinedWeight);
+                rows.push([ngram, ema[ngram].duration, weights.durationFactor, ema[ngram].mistakes, weights.mistakesFactor, ema[ngram].consistency, weights.consistencyFactor, combinedWeight]);
             }
             rows.sort((a, b) => a[7] - b[7]);
             var lines = ['ngram,duration,duration factor,chars since last mistake,mistake factor,consistency,consistency factor,combined weight'];
