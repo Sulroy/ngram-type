@@ -529,6 +529,9 @@ var ngramTypeConfig = {
                 var prevScore = ds.emaScores[token.text];
                 
                 var durationMsScore = this.getTokenDurationMs(i);
+                if (this.data.source === 'custom_words' || this.data.source === 'words') {
+                    durationMsScore /= token.text.length;
+                }
                 var mistakesScore = this.getTokenMistakeGapLength(i);
                 var consistencyScore = this.getTokenCoefficientOfVariation(i);
                 if (prevScore === undefined) {
