@@ -416,7 +416,7 @@ var ngramTypeConfig = {
             this.tokenWrongCounts = Array(n).fill(0);
             this.tokenKeyTimestampMs = Array(n);
             for (var i = 0; i < n; i++) {
-                this.tokenKeyTimestampMs[i] = Array(this.tokens[i].end + 1 - this.tokens[i].start).fill(null);
+                this.tokenKeyTimestampMs[i] = Array(this.tokens[i].end + 1 - (this.tokens[i].start - 1)).fill(null);
             }
             this.tokenStartMs = Array(n).fill(null);
             this.tokenEndMs = Array(n).fill(null);
@@ -462,9 +462,9 @@ var ngramTypeConfig = {
                 if (validIdx >= token.end && this.tokenEndMs[i] == null) {
                     this.tokenEndMs[i] = now;
                 }
-                
-                if (validIdx >= token.start && validIdx <= token.end) {
-                    this.tokenKeyTimestampMs[i][validIdx - token.start] = now;
+                // -1 because we also measure the leading time
+                if (validIdx >= token.start - 1  && validIdx <= token.end) {
+                    this.tokenKeyTimestampMs[i][validIdx - token.start + 1] = now; // +1 so the space index is not -1
                 }
             }
         },
@@ -505,6 +505,10 @@ var ngramTypeConfig = {
         },
         getTokenCoefficientOfVariation: function (tokenIndex) {
             var keyIntervalMs = Array(this.tokenKeyTimestampMs[tokenIndex].length - 1).fill(null);
+            // edge case for the first bigram in a phrase, as it only has one data point
+            if (tokenIndex === 0 && this.tokens[tokenIndex].end - this.tokens[tokenIndex].start <= 1) {
+                return null;
+            }
             for (var j = 0; j < keyIntervalMs.length; j++) {
                 keyIntervalMs[j] = this.tokenKeyTimestampMs[tokenIndex][j + 1] - this.tokenKeyTimestampMs[tokenIndex][j];
             }
@@ -531,14 +535,14 @@ var ngramTypeConfig = {
                     ds.emaScores[token.text] = {
                         duration: durationMsScore,
                         mistakes: mistakesScore,
-                        consistency: consistencyScore,
+                        consistency: consistencyScore || 0,
                     };
                 } else {
-                    ds.emaScores[token.text] = {
-                        duration: alpha * durationMsScore + (1 - alpha) * prevScore.duration,
-                        mistakes: alpha * mistakesScore + (1 - alpha) * prevScore.mistakes,
-                        consistency: alpha * consistencyScore + (1 - alpha) * prevScore.consistency,
-                    };
+                    ds.emaScores[token.text].duration = alpha * durationMsScore + (1 - alpha) * prevScore.duration;
+                    ds.emaScores[token.text].mistakes = alpha * mistakesScore + (1 - alpha) * prevScore.mistakes;
+                    if (consistencyScore !== null) {
+                        ds.emaScores[token.text].consistency = alpha * consistencyScore + (1 - alpha) * prevScore.consistency;
+                    }
                 }
             }
             this.save();
